@@ -5,7 +5,7 @@ session (or any new contributor) can pick up exactly where the last session left
 re-deriving context. Update it at the end of every work session — stale handover notes are
 worse than none.
 
-Last updated: 2026-07-11, end of the Sprint 1 scaffolding session.
+Last updated: 2026-07-11, end of the Vercel/Supabase infra session (scaffolding session + guest-auth session + this one).
 
 ---
 
@@ -88,11 +88,24 @@ payment outcome matrix), §15 (sprint-by-sprint build order with exit tests).
   project — it's the real one, not a throwaway.
 
 ### Vercel
-- **Status unconfirmed.** The project owner had a Vercel tab open but the connection between
-  this Claude session and their browser never worked reliably enough to check whether a
-  project exists yet. **First thing to do: ask the user, or check `vercel.com/dashboard`
-  directly, whether a DHOP project already exists before creating a new one.**
-- Nothing in this repo is deployed anywhere yet.
+- **Confirmed and set up** (2026-07-11). Account: `John Dakey's projects` (Hobby plan), same
+  GitHub login as the repo owner. **Three separate Vercel projects, one per app** — this is
+  required for a Turborepo monorepo (Vercel's "Root Directory" picker explicitly says: "For
+  monorepos, create a separate project for each directory you want to deploy"), not a mistake:
+  - `dhop-guest-web` → root directory `apps/guest-web` → https://dhop-guest-web.vercel.app
+  - `dhop-admin-web` → root directory `apps/admin-web` → https://dhop-admin-web.vercel.app
+  - `dhop-staff-pwa` → root directory `apps/staff-pwa` → https://dhop-staff-pwa.vercel.app
+- All three are connected to the GitHub repo's `main` branch — every push to `main` triggers a
+  deploy on all three automatically. All three deployed successfully on first push and are
+  currently showing the generic Turborepo starter page (expected — no DHOP UI built yet).
+- **No environment variables configured on any of the three projects yet.** Once the Supabase
+  keys below are collected, they need to be added to **all three** Vercel projects (Project →
+  Settings → Environment Variables), not just the local `.env.local` files, or deploys will
+  build fine (nothing references them yet) but break the moment guest-web's scan route ships.
+- To add another app or recreate a project: `vercel.com/new` → Import
+  `Digital-Hotel-Operations-Platform` → the Root Directory picker defaults to whatever
+  directory wasn't picked yet if you've already imported once this session — always double
+  check it before naming/deploying (see the Vercel UI note in §7, this cost real time).
 
 ### Environment variables
 - `.env.example` (committed, no real values) documents every var needed across all sprints.
@@ -101,14 +114,44 @@ payment outcome matrix), §15 (sprint-by-sprint build order with exit tests).
   hence the duplication — all four are gitignored, none are in the repo).
 - Currently populated: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
   `DATABASE_URL`, `DIRECT_URL`.
-- **Missing: `SUPABASE_SERVICE_ROLE_KEY`.** This is the single biggest blocker to writing any
-  server-side code (Edge Functions, the guest-session-minting logic in particular — see §5).
-  Get it from Supabase Dashboard → Settings → API → `service_role` `secret`, and fill it into
-  all four `.env.local` files. **Never** prefix it with `NEXT_PUBLIC_` — that would ship it to
-  the browser and defeat every RLS policy in the database.
+- **Still missing: `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_JWT_SECRET`.** These are the
+  single biggest blocker to running anything against the live project — the guest-session
+  JWT-minting logic (§4, §5) is built and locally verified, but has never touched the real
+  Supabase instance. Get `service_role` from Supabase Dashboard → Settings → API (legacy tab)
+  → `service_role` `secret`, and the JWT secret from Settings → JWT Keys. **Never** prefix
+  either with `NEXT_PUBLIC_` — that would ship them to the browser and defeat RLS entirely.
+  Once obtained: fill into all four local `.env.local` files **and** all three Vercel projects'
+  environment variable settings (see Vercel note above — easy to do one and forget the other).
 - Paystack, FCM, Hubtel, WhatsApp/Twilio keys: not needed until Sprint 4/5, not yet collected.
 
 ---
+
+## 4a. Critical Bug Found + Fixed (2026-07-11 session 2) — READ BEFORE TOUCHING DB
+
+The Sprint 1 migration enabled RLS and wrote policies on every table, but **never issued
+table-level `GRANT` statements**. Supabase's current default — `auto_expose_new_tables`
+unset, true both for `supabase start` locally and for newly-created hosted projects — no
+longer auto-grants privileges on new tables the way it used to. Result: `anon`,
+`authenticated`, and **`service_role`** all got `permission denied for table X` on every
+single table, before RLS was ever evaluated. This affects the **live project identically** —
+confirmed by running a local Supabase instance (Docker) from scratch off the same migration
+and hitting the exact same error.
+
+- Fix migration: `supabase/migrations/20260711140000_grant_table_privileges.sql`. Grants
+  `service_role` full access (it's provisioned with `BYPASSRLS`, so grants are the only real
+  gate on it), `authenticated` full CRUD (RLS already scopes every row — this is guests via
+  the signed JWT's `role='authenticated'` claim, and staff), `anon` `SELECT` only. Also adds
+  `ALTER DEFAULT PRIVILEGES` so tables created by *future* migrations (Sprint 2/3/...) don't
+  hit this same bug silently.
+- **Verified against a local Supabase instance** (`supabase start`, Docker required — was
+  available this session): reset local DB, confirmed `permission denied` before the fix,
+  confirmed it resolves after. Then ran `apps/guest-web` locally against the local stack
+  (local-only test keys, not the live project's) and exercised the full scan pipeline below —
+  all outcomes behaved correctly, including a real RLS-gated read of a guest's own stay row.
+- **Dry-run against the live project passed clean** (`supabase db push --dry-run`) — only this
+  one migration is pending. **Not yet pushed for real** — needs your explicit go-ahead per the
+  standing rule in §7 below (never push to this project without a dry-run + confirmation in
+  the same turn, no exceptions even though this is "just" a grants fix).
 
 ## 4. What's Actually Built (Verified Working)
 
@@ -139,34 +182,80 @@ payment outcome matrix), §15 (sprint-by-sprint build order with exit tests).
   no-active-stay scan flow. Room 101's `room_key` is fixed
   (`demo0000000000000000000000101a`) so it's a stable URL to test against instead of querying
   the DB for a random key every time. See `supabase/seed.sql`.
-- `npm install` works clean, `npm run check-types` passes across all packages, no build errors.
+- `npm install` works clean, `npm run check-types` and `npm run lint` pass across all packages
+  with zero warnings, no build errors.
 - Next.js pinned to `^16.2.10` in every app (bumped from the `create-turbo` default `16.2.0`,
   which had a **high-severity** DoS advisory — see `npm audit` if this ever regresses).
+- **Guest QR-scan auth end-to-end (§4.3, all six outcomes A–F), locally verified working:**
+  - `packages/shared/src/jwt.ts` — signs/verifies the guest session JWT (HS256, custom claims
+    `app_role='guest'`, `stay_id`, `tier`, plus `role='authenticated'` so PostgREST picks the
+    right Postgres role).
+  - `packages/shared/src/scan-outcome.ts` — pure, unit-testable resolver for outcomes A–F.
+  - `packages/shared/src/supabase.ts` — added `createGuestClient()`, which attaches the signed
+    JWT as a bearer header so PostgREST evaluates RLS against it (guests never get a real
+    Supabase Auth session, per §14.5).
+  - `apps/guest-web/app/r/[room_key]/route.ts` — the scan entry point. Service-role room
+    lookup → resolves outcome → mints/sets the session cookie (A), logs a `security_events` row
+    and redirects (C/D), gates on `device_cap` (E), downgrades an existing session to
+    `post_stay` (F), or drops a short-lived room-id cookie for the notify-reception tap (B).
+  - Six destination pages: `/portal`, `/vacant` (+ `/vacant/notify`, logs an `audit_log` row —
+    full reception task routing waits on the Sprint 2 `requests` table), `/out-of-order`,
+    `/invalid`, `/device-limit`, `/post-stay`.
+  - **Verified locally** (Docker + `supabase start`, local-only test keys — see §4a): scanned
+    room 101 → landed on `/portal` with a working RLS-gated read of the guest's own stay
+    (`Welcome, Mensah`, correct checkout date); scanned room 102 (vacant) → outcome B, notify
+    tap wrote to `audit_log`; scanned room 202 (`out_of_order`) → outcome C; bogus key →
+    outcome D; 6 scans of room 101 → outcome E (device cap) on the 6th.
+  - **Not yet verified against the live project** — needs `SUPABASE_SERVICE_ROLE_KEY` and the
+    new `SUPABASE_JWT_SECRET` (see §3) plus the grant-fix migration pushed (§4a).
 
 ## 5. What's NOT Built Yet — Pick Up Here
 
 In priority order, following the Sprint 1 exit test in spec §15 ("scan a room QR and land in a
 full session; scan a vacant room and get outcome B; check-in upgrades the open page live"):
 
-1. **Blocked on `SUPABASE_SERVICE_ROLE_KEY`** (see §3) — get this before starting anything below.
-2. **Edge Function: mint a guest session JWT.** Given a `room_key`, look up the room, check for
-   an active stay, and either (a) issue a signed JWT + session cookie bound to that stay
-   (`guest_sessions` insert, tier `full`) or (b) return the "no active stay" state for outcome
-   B. This is the crux of the whole auth model — implement every outcome in spec §4.3's table
-   (A through F), not just the happy path.
-3. **`apps/guest-web` scan route** (`/r/[room_key]`) that calls the Edge Function above and
-   sets the session cookie, per spec §4.2–§4.3.
-4. **Second-device flow** (`g.dhop.app` manual entry — name + room code) per spec §4.5,
-   including the rate limiting called out there (5 attempts / 15 min / room+IP).
-5. **Staff PIN auth** on `apps/staff-pwa` (§5.1) — needed before the room board (next sprint)
-   is testable end-to-end with a real actor.
-6. Only after guest + staff auth work: move to Sprint 2 (room status board + Realtime + first
+1. ~~Push the grant-fix migration to the live project~~ — **done**, pushed 2026-07-11.
+   Confirmed applied via `supabase migration list --db-url "$DIRECT_URL"`.
+2. ~~Push the branch-code migration to the live project~~ — **done**, pushed 2026-07-11.
+   `branches.code = 'ACCRA'` confirmed applied via `supabase migration list`.
+3. **Get `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_JWT_SECRET` into all four `.env.local`
+   files** (see §3) — needed to point `guest-web` at the live project instead of local Docker.
+4. ~~Edge Function: mint a guest session JWT~~ — done, but as a Next.js Route Handler
+   (`apps/guest-web/app/r/[room_key]/route.ts`) rather than a Supabase Edge Function. This
+   deviates from the migration file's own comment ("happens through a SECURITY DEFINER Edge
+   Function") — same trust boundary either way (both are service-role server contexts), and it
+   avoids an extra network hop, but flag this as a deliberate call, not an oversight, if it
+   ever needs reconciling with the spec's literal wording.
+5. ~~Second-device flow~~ — done. `apps/guest-web/app/enter/page.tsx` (form) +
+   `app/enter/submit/route.ts` (POST handler). Parses `ACCRA-204` via
+   `lib/room-code.ts:parseRoomCode`, matches last name case/whitespace-insensitively
+   (`packages/shared/src/second-device.ts`), rate-limits 5 attempts / 15 min per IP *and* per
+   room via `security_events` rows (event_type `second_device_attempt`, plus a distinct
+   `second_device_rate_limited` event on lockout), issues a `limited`-tier session on match.
+   **Not implemented from §4.5's upgrade paths:** (b) push-approval-from-an-existing-device and
+   (c) OTP-to-phone-on-file — only (a) "scan the room QR from that device" exists, because
+   that's just outcome A of the existing scan route, already built. (b) and (c) need
+   Realtime/notification plumbing that doesn't exist until later sprints.
+   **Locally verified**: wrong last name → generic failure; case/whitespace-insensitive match
+   (`"  mensah  "` matched `"Mensah"`) → `limited` session, confirmed via `/portal`; unknown
+   branch code → generic failure; 5 failed attempts from one IP → 6th+ locked.
+6. **Staff PIN auth** on `apps/staff-pwa` (§5.1) — needed before the room board (next sprint)
+   is testable end-to-end with a real actor. Not started.
+7. **Check-in flow doesn't exist yet** (staff-side). The exit test's "check-in upgrades the
+   open page live" clause needs it, plus a Realtime subscription on `/vacant` — neither exists
+   yet. Worth sequencing before or alongside staff PIN auth.
+8. Only after guest + staff auth work: move to Sprint 2 (room status board + Realtime + first
    request type) per spec §15.
+9. **Minor seed-data inconsistency noticed, not fixed:** `supabase/seed.sql` inserts room 101
+   with `status='vacant_clean'` even though it also inserts an active stay on that room — the
+   two are independent columns and nothing in the seed script reconciles them. Doesn't affect
+   the scan-auth logic above (that reads `stays.state`, not `rooms.status`), but the real
+   check-in flow (item 7 above) needs to flip `rooms.status` when creating a stay, and this
+   seed row should probably be fixed to match once that logic exists.
 
 ## 6. Open Decisions Still Needing the Project Owner
 
 - Repo visibility (public vs. private) — asked, not yet answered.
-- Vercel project state — never confirmed (see §3).
 - Pilot hotel selection, and whether they need reservation-calendar support in Phase 1 (spec
   §17, item 2 and 4).
 - Paystack vs. confirming Paystack is final (it's already locked in per §2 above, but no
@@ -191,6 +280,39 @@ full session; scan a vacant room and get outcome B; check-in upgrades the open p
   without a prior dry-run, and `git push` to `main` without explicit user confirmation in the
   same turn). This is correct behavior, not a bug — always dry-run/preview and get an explicit
   go-ahead before either kind of push, every time, even if it feels repetitive.
+- **Table-level `GRANT`s are not implied by `RLS ENABLE` + policies, and Supabase no longer
+  auto-grants them.** See §4a — this cost most of a session to discover because everything
+  *looked* right (RLS enabled, policies written, migration applied clean) and failed with an
+  unhelpful-until-you-know-the-cause `permission denied for table X`, from `service_role` too.
+  Any future migration that adds a table needs to either rely on the `ALTER DEFAULT PRIVILEGES`
+  set up in `20260711140000_grant_table_privileges.sql`, or explicitly grant if that table is
+  created in a schema/role context the default privileges don't cover.
+- **Local Supabase (`supabase start`, Docker) is a fast way to verify migration/auth changes
+  without touching the live project or needing real credentials.** The CLI prints its own
+  local anon/service_role/JWT-secret test keys — export them as shell env vars when running
+  `next dev` (don't write them into `.env.local`, which should stay pointed at the live
+  project) to point an app at the local stack instead. `supabase db reset` reapplies all
+  migrations + seed from scratch, which is exactly what you want for testing a new migration
+  before it goes anywhere near the real database.
+- **Vercel's "New Project" UI is flaky under browser automation, not under normal use.**
+  Symptoms hit this session: (1) the Root Directory field silently ignores typed/programmatic
+  input and reverts to a placeholder — it's not a free-text field, it opens a folder-picker
+  modal via its "Edit" button instead; (2) that modal sometimes didn't open on a plain
+  coordinate click, but did when the same element was clicked by its accessibility-tree `ref`
+  instead of raw pixel coordinates — prefer ref-based clicks over eyeballed coordinates on this
+  page; (3) inside the modal, clicking a folder's **label** just expands/collapses it — you
+  have to click the **radio button** itself to actually select it, then click "Continue"; (4)
+  after clicking "Deploy," the page sometimes kept showing the unsubmitted form in both
+  `get_page_text` and a screenshot even though the deploy *had* actually started — checking the
+  team's project list (`vercel.com/<team>`) is more reliable than trusting the form page's
+  apparent state. None of this reflects a real product bug, just automation friction — a human
+  clicking through this UI wouldn't hit any of it.
+- **A Browser-pane tab's clipboard is not the same clipboard as this machine's `pbpaste`.**
+  Clicking a "Copy" button on a page open in the Browser pane does not make the value available
+  to local shell commands — confirmed the hard way when `pbpaste` returned unrelated stale
+  local-clipboard content after clicking "Copy" on a revealed Supabase `service_role` key. For
+  any secret that must end up in a local file, have the user paste it into the chat directly
+  rather than trying to bridge the two clipboards.
 
 ## 8. How to Resume Right Now
 

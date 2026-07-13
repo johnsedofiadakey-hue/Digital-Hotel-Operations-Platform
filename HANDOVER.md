@@ -30,8 +30,20 @@ exactly how, given there are no Paystack credentials anywhere in this project), 
 Paystack test mode" specifically has never literally happened.
 
 **Nothing is "still open" from the Phase 2 scope this session tracked** — the only genuinely
-unbuilt things are `admin-web` (never touched, any phase) and P3-tagged items the spec itself
+unbuilt things were `admin-web` (never touched, any phase) and P3-tagged items the spec itself
 says not to build early. See §5 item 21 for the exact list.
+
+**2026-07-13 session: `admin-web` is no longer untouched.** Real Supabase Auth login
+(email+password, §5.3), a first-Owner bootstrap flow, and staff list/create/deactivate — the
+single biggest blocker in this whole project, since nothing else could authenticate a real
+staff member without it. Full writeup in §5 item 25 (new). Committed and pushed
+(`bffb49c`). Verified: full production build across all three apps, and the login form's
+`signInWithPassword` call confirmed round-tripping against the **live** Supabase project (its
+own real "Invalid login credentials" response to bogus test creds, not a mock). **Not yet
+verified**: actually creating an Owner via `/setup` or a staff member via `/staff/new` —
+both need `SUPABASE_SERVICE_ROLE_KEY`, still missing (see §3), which is now the single
+blocking dependency for turning this from "builds and the auth round-trip works" into
+"an actual hotel owner can log in and add their team."
 
 **Read §4b before writing anything that needs live updates** — this session discovered that
 this Supabase build's Realtime `postgres_changes` doesn't actually deliver events locally (it
@@ -363,8 +375,8 @@ session *can* finish, and it is finished:
 ## 4. What's Actually Built (Verified Working)
 
 - Turborepo monorepo scaffolded: `apps/guest-web` (port 3000), `apps/staff-pwa` (port 3001),
-  `apps/admin-web` (port 3002). `guest-web` and `staff-pwa` now have real DHOP-specific auth
-  flows (below) — **`admin-web` is still the generic create-turbo starter page, untouched.**
+  `apps/admin-web` (port 3002). All three now have real DHOP-specific auth flows — `admin-web`'s
+  is the newest, see §5 item 25 for the full writeup.
 - `packages/shared` (`@repo/shared`): TypeScript types for every core entity (`Stay`, `Room`,
   `GuestSession`, `Order`, etc. — see `src/types.ts`), state-machine transition tables for
   stay/room-status/request/order lifecycles with a `canTransition()` guard (`src/state-
@@ -696,10 +708,8 @@ full session; scan a vacant room and get outcome B; check-in upgrades the open p
     (`retention-purge` won't delete anything for a long time — see §4d, nothing in current data
     is remotely old enough yet).
 16. ~~Every Phase 1 sprint in §15~~ — **done**, all eight Phase-1 migrations live as of
-    2026-07-11. `admin-web` remains the untouched create-turbo starter page — no Phase 1 or
-    Phase 2 work has touched it; a real staff-management UI (creating staff + assigning PINs)
-    would finally close the loop on `hash_staff_pin()`, which has been sitting ready and unused
-    since Sprint 1.
+    2026-07-11. `admin-web` remained the untouched create-turbo starter page through the end of
+    Phase 1/2/3 work — see item 25 for where this finally got closed out, 2026-07-13.
 17. **Phase 2, round 1 — three items caught by a stop-hook review as unmarked-P1 gaps, not
     actual Phase 2 scope** (live chat between guest and reception, private guest feedback, a
     language-switcher scaffold) — all three built and pushed live 2026-07-12:
@@ -905,12 +915,71 @@ full session; scan a vacant room and get outcome B; check-in upgrades the open p
       recursion, correct URL returned, §7.1's wifi/directions/house-rules read still works,
       staff-side `branches` access unaffected).
 24. **Genuinely open after Phase 3**: Finance depth (split billing, automated reconciliation —
-    see item 21's reasoning, unchanged), `admin-web` (still the untouched create-turbo starter),
-    and everything §4d already flags as physically outside what a coding session can finish (real
-    Paystack/WhatsApp/Hubtel/FCM credentials, a live pilot hotel, browser-verified offline queue
-    behavior). At this point every spec-defined phase tag (P1, P2, P3) has at least one item
-    built and verified except Finance depth, which remains deliberately deferred for the reasons
-    in item 21, not forgotten.
+    see item 21's reasoning, unchanged), `admin-web` (untouched as of this point — see item 25
+    for where this changed), and everything §4d already flags as physically outside what a
+    coding session can finish (real Paystack/WhatsApp/Hubtel/FCM credentials, a live pilot
+    hotel, browser-verified offline queue behavior). At this point every spec-defined phase tag
+    (P1, P2, P3) has at least one item built and verified except Finance depth, which remains
+    deliberately deferred for the reasons in item 21, not forgotten.
+25. **`admin-web` built (2026-07-13 session)** — real Supabase Auth email+password login (§5.3),
+    distinct from guest-web/staff-pwa's custom-JWT approach since this is the one app where the
+    actor genuinely holds a normal GoTrue session:
+    - `lib/supabase-server.ts` / `supabase-browser.ts` — `@supabase/ssr` clients (new dependency,
+      not used anywhere else in the monorepo). `lib/admin-session.ts` resolves the signed-in
+      `auth.users` identity to its `staff` row using the caller's **own** RLS-scoped client (the
+      existing "staff can view self" policy already covers this — no service-role needed for an
+      identity lookup, unlike every PIN-based lookup in staff-pwa), and rejects anyone whose role
+      isn't `branch_manager`/`owner`/`super_admin` even with valid credentials — kitchen/
+      housekeeping staff can authenticate (they have a real `auth.users` row per staff-jwt.ts's
+      design) but don't belong in this app.
+    - `/setup` — one-time bootstrap for the first Owner account (and organization, if none
+      exists). The only self-serve account creation anywhere in this project, deliberately, and
+      only while zero `staff` rows exist anywhere. Marked `export const dynamic = "force-dynamic"`
+      — it's the one admin-web page with no `cookies()` call, so without that directive Next
+      tried to statically prerender it at build time and immediately hit its own service-role DB
+      check. **This was caught by running the actual production build**, not by inspection.
+    - `/staff` (list, scoped: owner sees the whole org, branch_manager only their own branch —
+      enforced in application code, not relied on RLS for; see the note below about a looser
+      existing RLS policy), `/staff/new` (create), `/staff/[id]/deactivate`.
+      - Creation always provisions a real `auth.users` row — every staff row needs one per
+        staff-jwt.ts's design, even PIN-only staff who never use it directly (a synthetic
+        `@staff.dhop.internal` email is used when none is given). Depending on role: email+
+        password (branch_manager/owner — they log into admin-web), and/or a PIN (every
+        branch-scoped role including branch_manager) via the existing `hash_staff_pin`/
+        `verify_staff_pin` RPCs from Sprint 1 — PIN uniqueness within a branch is checked by
+        reusing `verify_staff_pin` itself (if it finds a match, the PIN's taken) rather than
+        duplicating its comparison logic.
+      - Role/branch assignment is re-validated server-side against the actor's own scope
+        (branch_manager confined to their branch, owner to their org, neither can assign
+        `super_admin`) — the form's dropdown is filtered too, but that's not where the real
+        gate is.
+      - Deactivation revokes the target's `staff_pins` rows and relies on staff-session.ts's
+        existing `.eq("active", true)` filter to kill their session on the very next request —
+        no separate token-revocation mechanism needed, per §5.4.
+      - **Noted, not fixed**: the Sprint 1 migration's `"owners can view all staff in own
+        organization"` RLS policy's condition is `role in ('owner', 'branch_manager')` — meaning
+        it actually grants branch_manager org-wide staff visibility too, looser than §5.5's
+        intent (branch-scoped). `admin-web`'s own queries apply the tighter, correct filter
+        regardless, so the *app* behaves correctly — but the RLS policy itself is still looser
+        than it should be for anyone hitting the API directly. Worth tightening in a future
+        migration; flagging rather than fixing now since touching a live RLS policy deserves its
+        own deliberate pass, not a drive-by edit while building an unrelated feature.
+    - `/dashboard` — deliberately minimal (occupancy % + open-request count per branch), not
+      the full revenue/satisfaction/SLA view spec §8.2-8.3 describe. Exists so login has
+      somewhere to land besides a dead page; real analytics is a separate follow-up.
+    - `/logout`, and `app/page.tsx` rewritten from the create-turbo starter to auth-aware
+      routing (mirrors staff-pwa's root page pattern).
+    - **Verified**: `npm run check-types`, `npm run lint`, and a full `npm run build` all pass
+      clean across all three apps (11 admin-web routes). The login form was exercised against
+      the **live** Supabase project through a real browser (not a mock) — submitting bogus
+      credentials produced Supabase Auth's own actual `"Invalid login credentials"` response,
+      confirming the anon-key wiring is genuinely correct end-to-end, not just compiling.
+      **Not verified**: `/setup` and `/staff/new` actually succeeding — both need
+      `SUPABASE_SERVICE_ROLE_KEY`, confirmed still missing by hitting `/setup` in a real browser
+      and getting the exact expected `Missing required env var: SUPABASE_SERVICE_ROLE_KEY`
+      error (not a different, unexpected failure — the code path is right, the key just isn't
+      there yet). **This is now the single blocking dependency** for a real Owner account to
+      exist on the live project at all.
 
 ## 6. Open Decisions Still Needing the Project Owner
 
@@ -1032,6 +1101,20 @@ npx supabase start && npx supabase db reset    # applies every migration + seed.
 # http://127.0.0.1:54321 and the local anon/service_role/JWT-secret values supabase start prints
 ```
 
-Then: §5 item 9 (push the requests migration — needs a go-ahead), and after that, Sprint 3
-(§15) — menus, cart, charge-to-room orders, kitchen queue. That's the actual next step; Sprint
-1 and Sprint 2's exit tests both pass as of this session.
+**Then, in priority order (as of 2026-07-13):**
+
+1. **Get `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_JWT_SECRET` into all four `.env.local` files**
+   (§3) — this single missing value is the only thing standing between "everything below builds
+   and passes local/logic verification" and "an actual hotel owner can use this." Nothing else
+   on this list can be verified against the live project without it.
+2. Once the key exists: actually create the first Owner via `/setup`, confirm `/staff/new`
+   creates a real staff member + PIN, confirm that PIN works for `/pin` tap-in on staff-pwa —
+   this closes the loop this whole project has been building toward (§5 item 25).
+3. Add the Supabase env vars to all three **Vercel** projects, not just local `.env.local` (§3's
+   Vercel note) — deploys currently have none set.
+4. Everything else genuinely open: Finance depth (split billing, reconciliation — §5 item 21),
+   admin-web's noted-but-not-fixed RLS looseness on the staff-visibility policy (§5 item 25), a
+   PIN-reset UI (doesn't exist — see the comment in
+   `apps/admin-web/app/staff/new/submit/route.ts`), and everything §4d flags as physically
+   outside a coding session's reach (real Paystack/WhatsApp/Hubtel/FCM credentials, a live pilot
+   hotel, browser-verified offline queue behavior).

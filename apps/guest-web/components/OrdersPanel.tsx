@@ -18,6 +18,14 @@ interface Props {
   supabaseAnonKey: string;
 }
 
+const KITCHEN_STATE_PILL: Record<OrderKitchenState, string> = {
+  placed: "status-neutral",
+  acknowledged: "status-progress",
+  preparing: "status-progress",
+  ready: "status-good",
+  delivered: "status-good",
+};
+
 // §8.2 order lifecycle, guest side — mirrors RequestsPanel's shape. Live
 // updates via Broadcast-from-Database on `orders:stay:{stay_id}` (§4b).
 export function OrdersPanel({ supabaseUrl, supabaseAnonKey }: Props) {
@@ -66,15 +74,16 @@ export function OrdersPanel({ supabaseUrl, supabaseAnonKey }: Props) {
   if (orders.length === 0) return null;
 
   return (
-    <div style={{ marginTop: "1.5rem" }}>
-      <h2 style={{ fontSize: "1.1rem" }}>Your orders</h2>
-      <ul>
-        {orders.map((o) => (
-          <li key={o.id}>
-            {formatGhs(o.total_minor_units)} — {o.kitchen_state}
-          </li>
-        ))}
-      </ul>
+    <div>
+      <h2 className="section-title">Your orders</h2>
+      {orders.map((o) => (
+        <div key={o.id} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontWeight: 600 }}>{formatGhs(o.total_minor_units)}</span>
+          <span className={`status-pill ${KITCHEN_STATE_PILL[o.kitchen_state]}`}>
+            {o.kitchen_state.replace("_", " ")}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

@@ -17,6 +17,16 @@ interface RequestRow {
 // Concierge is chat, not a request type a guest submits from this form (§4.4).
 const REQUEST_TYPES: RequestType[] = ["housekeeping", "maintenance", "laundry"];
 
+const REQUEST_STATE_PILL: Record<RequestState, string> = {
+  submitted: "status-neutral",
+  claimed: "status-progress",
+  in_progress: "status-progress",
+  done: "status-good",
+  confirmed: "status-good",
+  cancelled: "status-critical",
+  reopened: "status-progress",
+};
+
 interface Props {
   tier: GuestSessionTier;
   supabaseUrl: string;
@@ -103,11 +113,11 @@ export function RequestsPanel({ tier, supabaseUrl, supabaseAnonKey }: Props) {
   );
 
   return (
-    <div style={{ marginTop: "1.5rem" }}>
-      <h2 style={{ fontSize: "1.1rem" }}>Requests</h2>
+    <div>
+      <h2 className="section-title">Requests</h2>
 
       {tier !== "post_stay" && (
-        <form onSubmit={submitRequest} style={{ display: "grid", gap: "0.5rem", margin: "0.75rem 0" }}>
+        <form onSubmit={submitRequest} className="card" style={{ marginBottom: "0.75rem" }}>
           <label>
             Type
             <select value={type} onChange={(e) => setType(e.target.value as RequestType)}>
@@ -122,32 +132,34 @@ export function RequestsPanel({ tier, supabaseUrl, supabaseAnonKey }: Props) {
             Note (optional)
             <input value={note} onChange={(e) => setNote(e.target.value)} />
           </label>
-          <button type="submit" disabled={!ready || submitting}>
+          <button type="submit" className="btn-gold" disabled={!ready || submitting}>
             Submit request
           </button>
         </form>
       )}
 
-      <ul>
-        {requests.map((r) => (
-          <li key={r.id}>
-            {r.type} — {r.state}
-            {r.note ? ` (${r.note})` : ""}
-            {r.state === "done" && (
-              <>
-                {" "}
-                <button type="button" onClick={() => respondToDone(r, "confirmed")}>
-                  Confirm
-                </button>{" "}
-                <button type="button" onClick={() => respondToDone(r, "reopened")}>
-                  Reopen
-                </button>
-              </>
-            )}
-          </li>
-        ))}
-        {requests.length === 0 && <li>No requests yet.</li>}
-      </ul>
+      {requests.map((r) => (
+        <div key={r.id} className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
+            <div>
+              <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{r.type}</div>
+              {r.note && <div className="muted">{r.note}</div>}
+            </div>
+            <span className={`status-pill ${REQUEST_STATE_PILL[r.state]}`}>{r.state.replace("_", " ")}</span>
+          </div>
+          {r.state === "done" && (
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+              <button type="button" className="btn-gold" onClick={() => respondToDone(r, "confirmed")}>
+                Confirm
+              </button>
+              <button type="button" className="btn-outline" onClick={() => respondToDone(r, "reopened")}>
+                Reopen
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+      {requests.length === 0 && <p className="muted">No requests yet.</p>}
     </div>
   );
 }

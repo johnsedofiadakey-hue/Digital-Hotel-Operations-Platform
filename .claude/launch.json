@@ -18,6 +18,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--workspace=admin-web"],
       "port": 3002
+    },
+    {
+      "name": "www",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--workspace=www"],
+      "port": 3004
     }
   ]
 }

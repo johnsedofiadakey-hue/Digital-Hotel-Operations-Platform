@@ -39,6 +39,7 @@ export interface Branch {
   id: string;
   organizationId: string;
   name: string;
+  code: string; // short, globally-unique, human-typeable (e.g. "ACCRA") — §4.5
 }
 
 export interface RoomCategory {
@@ -92,6 +93,7 @@ export interface GuestRequest {
   type: RequestType;
   state: RequestState;
   priority: RequestPriority;
+  note?: string;
   claimedBy?: string;
   submittedAt: string;
   claimedAt?: string;
@@ -106,4 +108,50 @@ export interface Order {
   paymentState: OrderPaymentState;
   paystackRef?: string;
   totalMinorUnits: number; // pesewas, to avoid float currency math
+}
+
+export interface MenuSection {
+  id: string;
+  branchId: string;
+  name: string;
+  roomCategoryId?: string; // unset = visible to every room category, §7.3
+  sortOrder: number;
+}
+
+export interface MenuItem {
+  id: string;
+  sectionId: string;
+  branchId: string;
+  name: string;
+  description?: string;
+  priceMinorUnits: number;
+  available: boolean; // the sold-out toggle, §8.3
+  sortOrder: number;
+}
+
+export interface OrderItem {
+  id: string;
+  orderId: string;
+  menuItemId?: string;
+  name: string; // snapshotted at order time
+  quantity: number;
+  unitPriceMinorUnits: number;
+}
+
+export interface Folio {
+  id: string;
+  stayId: string;
+  branchId: string;
+}
+
+export interface FolioLine {
+  id: string;
+  folioId: string;
+  branchId: string;
+  source: "order" | "service" | "adjustment";
+  orderId?: string;
+  description: string;
+  amountMinorUnits: number;
+  flagged: boolean; // charge-to-room posts at placement, flagged until delivered, §8.2
+  postedAt: string;
 }

@@ -23,10 +23,41 @@ export function createAnonClient(env: SupabaseEnv): SupabaseClient {
   });
 }
 
-// Staff (PIN, phone-OTP, email/password) all authenticate through Supabase Auth —
-// same client shape as the anon client, the session just carries a real auth.uid().
+// Staff who authenticate through Supabase Auth natively (phone OTP,
+// email/password, §5.2-§5.3) — same client shape as the anon client, the
+// session just carries a real auth.uid().
 export function createStaffClient(env: SupabaseEnv): SupabaseClient {
   return createAnonClient(env);
+}
+
+// `accessToken` (not a manual Authorization header) is what makes Realtime's
+// postgres_changes respect RLS for these custom-signed JWTs too — supabase-js
+// uses this callback to authenticate both PostgREST *and* the Realtime
+// socket, whereas a plain header only covers REST calls. Needed for §14.4's
+// department pools and per-stay request lists, both RLS-gated Realtime
+// subscriptions held by guests/staff who never went through GoTrue.
+function createBearerTokenClient(env: SupabaseEnv, token: string): SupabaseClient {
+  return createClient(env.url, env.anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    accessToken: async () => token,
+  });
+}
+
+// Guest-facing queries (§14.5). Guests never hold a Supabase Auth session, so
+// the signed guest JWT (see jwt.ts) is attached as a bearer header directly —
+// PostgREST verifies it with the project JWT secret and evaluates RLS against
+// its custom claims, exactly like a real Auth token, without ever touching
+// GoTrue's session/refresh machinery.
+export function createGuestClient(env: SupabaseEnv, guestToken: string): SupabaseClient {
+  return createBearerTokenClient(env, guestToken);
+}
+
+// Staff who tap in via PIN (§5.1, shared department tablets) rather than a
+// GoTrue login. Same bearer-token approach as guests — the signed staff JWT
+// (see staff-jwt.ts) carries a real auth.uid() in its `sub` claim, so RLS
+// resolves exactly as it would for a normal Supabase Auth session.
+export function createStaffPinClient(env: SupabaseEnv, staffToken: string): SupabaseClient {
+  return createBearerTokenClient(env, staffToken);
 }
 
 // Server-only. Never import this into anything that ships to the browser.
